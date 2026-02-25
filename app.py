@@ -33,7 +33,7 @@ def list_monsters(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
-    where = []
+    where = ["base_stars != natural_stars", "obtainable = true"]
     params = {}
 
     if stars:
