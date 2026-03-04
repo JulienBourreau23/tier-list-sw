@@ -1,58 +1,79 @@
 import os
 from typing import Optional
+from contextlib import contextmanager, asynccontextmanager
 from fastapi import FastAPI, Query, HTTPException, Security, Depends
 from fastapi.responses import FileResponse
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("APP_PORT", "8000"))
-
 PG_DSN = os.getenv("PG_DSN")
 ICON_DIR = os.getenv("ICON_DIR", "/srv/sw_coaching/icons/monsters")
 FALLBACK_ICON = os.getenv("FALLBACK_ICON", os.path.join(ICON_DIR, "missing.png"))
-API_KEY = os.getenv("API_SECRET_KEY")  # ← nouveau
+API_KEY = os.getenv("API_SECRET_KEY")
 
 if not PG_DSN:
     raise RuntimeError("PG_DSN manquant (ex: postgresql://user:pass@host:5432/sw_coaching)")
 
-app = FastAPI(title="TierList API", version="0.1")
+# ── Pool ─────────────────────────────────────────────────────────────────────
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None  # déclaré ici, pas dans la fonction
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, dsn=PG_DSN)
+    return _pool
+
+@contextmanager
+def get_conn():
+    conn = _get_pool().getconn()
+    try:
+        yield conn          # "conn" dans le "with get_conn() as conn:" — correct cette fois
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _get_pool().putconn(conn)  # toujours exécuté, même si exception
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    if _pool and not _pool.closed:
+        _pool.closeall()
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="TierList API", version="0.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
     allow_methods=["GET"],
-    allow_headers=["*", "X-API-Key"],  # ← autorise le header de clé
+    allow_headers=["*", "X-API-Key"],
 )
 
-# ── Sécurité API Key ─────────────────────────────────────────────────────────
+# ── Sécurité ──────────────────────────────────────────────────────────────────
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 async def verify_api_key(key: str = Security(api_key_header)):
-    """Si API_SECRET_KEY est définie dans le .env, elle est obligatoire."""
     if API_KEY and key != API_KEY:
         raise HTTPException(status_code=403, detail="Clé API invalide ou manquante")
 
-# ── DB ───────────────────────────────────────────────────────────────────────
-def get_conn():
-    return psycopg2.connect(PG_DSN)
-
-# ── Routes ───────────────────────────────────────────────────────────────────
-
+# ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    """Route publique — pas de clé requise (utile pour les healthchecks)."""
     return {"ok": True}
-
 
 @app.get("/api/monsters", dependencies=[Depends(verify_api_key)])
 def list_monsters(
     stars: Optional[str] = Query(default=None, description="Ex: '4,5'"),
-    elements: Optional[str] = Query(default=None, description="Ex: 'Fire,Water,Wind' ou 'Light,Dark'"),
+    elements: Optional[str] = Query(default=None, description="Ex: 'Fire,Water,Wind'"),
     q: Optional[str] = Query(default=None, description="Recherche texte dans nom_en"),
-    awaken_level: Optional[int] = Query(default=None, description="Niveau d'awakening (ex: 2 pour les monstres 2A)"),
+    awaken_level: Optional[int] = Query(default=None, description="Niveau d'awakening"),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
@@ -80,15 +101,8 @@ def list_monsters(
         params["awaken_level"] = awaken_level
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-
     sql = f"""
-        SELECT
-            com2us_id,
-            nom_en,
-            element,
-            archetype,
-            natural_stars,
-            base_stars
+        SELECT com2us_id, nom_en, element, archetype, natural_stars, base_stars
         FROM monstres
         {where_sql}
         ORDER BY natural_stars DESC, nom_en ASC
@@ -112,13 +126,7 @@ def list_monsters(
 @app.get("/api/monsters/{com2us_id}", dependencies=[Depends(verify_api_key)])
 def get_monster(com2us_id: int):
     sql = """
-        SELECT
-            com2us_id,
-            nom_en,
-            element,
-            archetype,
-            natural_stars,
-            base_stars
+        SELECT com2us_id, nom_en, element, archetype, natural_stars, base_stars
         FROM monstres
         WHERE com2us_id = %(com2us_id)s
     """
@@ -132,7 +140,6 @@ def get_monster(com2us_id: int):
 
     base_url = os.getenv("PUBLIC_BASE_URL", "")
     row["icon_url"] = f"{base_url}/icons/{row['com2us_id']}.png" if base_url else f"/icons/{row['com2us_id']}.png"
-
     return row
 
 
