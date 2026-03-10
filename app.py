@@ -74,10 +74,10 @@ def list_monsters(
     elements: Optional[str] = Query(default=None, description="Ex: 'Fire,Water,Wind'"),
     q: Optional[str] = Query(default=None, description="Recherche texte dans nom_en"),
     awaken_level: Optional[int] = Query(default=None, description="Niveau d'awakening"),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=1100),
     offset: int = Query(default=0, ge=0),
 ):
-    where = ["base_stars != natural_stars", "obtainable = true"]
+    where = ["base_stars != natural_stars", "obtainable = true", "awaken_bonus not like 'Secondary Awakening%'"]
     params = {}
 
     if stars:
