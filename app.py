@@ -77,8 +77,8 @@ def list_monsters(
     limit: int = Query(default=100, ge=1, le=1100),
     offset: int = Query(default=0, ge=0),
 ):
-    where = ["base_stars != natural_stars", "obtainable = true", "awaken_bonus not like 'Secondary Awakening%'"]
-    params = {}
+    where = ["base_stars != natural_stars", "obtainable = true", "awaken_bonus NOT LIKE %(no_secondary)s"]
+    params = {"no_secondary": "Secondary Awakening%"}
 
     if stars:
         star_list = [int(x.strip()) for x in stars.split(",") if x.strip().isdigit()]
